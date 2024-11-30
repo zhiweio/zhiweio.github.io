@@ -20,7 +20,10 @@ export default function Home({ posts }) {
           </h1>
           <div className="dark:text-grey text-gray mb-8  mt-4 text-base">
             <p>Data Engineer, CLI User.</p>
-            <p>我是一名数据研发工程师，命令行爱好者，开源贡献者。我主要写 Python 和 SQL，也写过一点 Scala、Java，正在学习使用前端。</p>
+            <p>
+              我是一名数据研发工程师，命令行爱好者，开源贡献者。我主要写 Python 和 SQL，也写过一点
+              Scala、Java，正在学习使用前端。
+            </p>
             <p className="dark:text-grey text-gray mb-8   mt-4 text-sm">
               <span className="mr-3 inline-block whitespace-nowrap pt-3">#Data Engineering</span>
               <span className="mr-3 inline-block whitespace-nowrap pt-3">#Data Architect</span>
@@ -32,7 +35,7 @@ export default function Home({ posts }) {
             </p>
           </div>
 
-          <p className="text-lg leading-7 text-gray dark:text-gray">{siteMetadata.description}</p>
+          <p className="text-gray dark:text-gray text-lg leading-7">{siteMetadata.description}</p>
         </div>
         <ul className="divide-y divide-gray-200 dark:divide-gray-700">
           {!posts.length && 'No posts found.'}
