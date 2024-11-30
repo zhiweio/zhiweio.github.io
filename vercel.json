@@ -1,4 +1,6 @@
 {
+  "installCommand": "yarn",
+  "buildCommand": "yarn build",
   "git": {
     "deploymentEnabled": {
       "gh-pages": false
