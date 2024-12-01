@@ -236,7 +236,7 @@ sqlite-utils `upsert` 实现的代码提交日期晚于 2018-06-04，作者按�
 
 下面是一段 SQLite 官方文档中关于 `INSERT OR REPLACE INTO` 的描述：
 
-When a [UNIQUE](https://www.sqlite.org/lang_createtable.html#uniqueconst) or [PRIMARY KEY](https://www.sqlite.org/lang_createtable.html#primkeyconst) constraint violation occurs, the REPLACE algorithm <span style='color:yellow_background'>deletes pre-existing rows that are causing the constraint violation</span> prior to inserting or updating the current row and the command continues executing normally. If a <span style='color:yellow_background'>[NOT NULL](https://www.sqlite.org/lang_createtable.html#notnullconst)</span><span style='color:yellow_background'> constraint violation occurs, the REPLACE conflict resolution replaces the NULL value with the default value for that column</span>
+When a [UNIQUE](https://www.sqlite.org/lang_createtable.html#uniqueconst) or [PRIMARY KEY](https://www.sqlite.org/lang_createtable.html#primkeyconst) constraint violation occurs, the REPLACE algorithm deletes pre-existing rows that are causing the constraint violation prior to inserting or updating the current row and the command continues executing normally. If a [NOT NULL](https://www.sqlite.org/lang_createtable.html#notnullconst) constraint violation occurs, the REPLACE conflict resolution replaces the NULL value with the default value for that column
 
 [https://www.sqlite.org/lang_conflict.html](https://www.sqlite.org/lang_conflict.html)
 
