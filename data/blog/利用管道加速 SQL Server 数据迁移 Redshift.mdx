@@ -1,0 +1,384 @@
+---
+title: '利用管道加速 SQL Server 数据迁移 Redshift'
+date: '2024-02-08'
+lastmod: '2024-12-01'
+tags: ['MSSQL', 'S3', 'UNIX', 'Pipe', 'Redshift']
+summary: '利用 Linux 管道加速 SQL Server 数据迁移到 Redshift 的方法包括使用 bcp 工具导出数据、切割和压缩文件、上传到 S3，并使用 COPY 命令导入到 Redshift。通过并行处理和命名管道技术，可以显著提高数据迁移效率，减少迁移时间和系统资源消耗。'
+---
+
+# 1. SQL Server 数据导出最佳实践
+
+## 使用 bcp utility 导出数据
+
+[https://learn.microsoft.com/en-us/sql/tools/bcp-utility?view=sql-server-ver16](https://learn.microsoft.com/en-us/sql/tools/bcp-utility?view=sql-server-ver16)
+
+bcp utility 是 SQL Server 提供的一种高效的数据导出工具，它能够将数据批量复制到指定格式的数据文件中。使用 bcp 工具，可以显著提高数据迁移的效率。
+
+- **导出速度**：根据 Microsoft 官方文档，bcp 的导出速度可以达到数百兆每秒，远高于其他数据导出工具。
+
+- **使用场景**：bcp 适用于大规模数据的快速导出，尤其是在数据迁移、备份和恢复等场景中。
+
+### bcp 的限制
+
+尽管 bcp 是一个强大的工具，但它不支持将数据直接导出到 Linux 管道。这意味着必须先将数据导出到本地文件，然后再进行后续的处理，这增加了数据迁移的复杂性和时间、空间成本。
+
+### 性能优化
+
+为了提高 bcp 的性能，可以采取以下措施：
+
+- **并行导出**：如果数据库中有多个表需要导出，可以并行运行多个 bcp 进程。
+
+- **调整缓冲区大小**：通过调整 bcp 的缓冲区大小，可以优化数据传输速度。
+
+- **使用索引**：在导出前创建适当的索引，可以加快数据的检索速度。
+
+### 实际案例
+
+使用 bcp 导出一张 132 GB 的大表，在具备 2.5 GB 带宽的内网 EC2 机器上执行，整个过程耗时不到 15 分钟，相比传统的 JDBC 访问查询导出，效率提升了数倍以上。
+
+# 2. Redshift 数据导入最佳实践
+
+## 遵循 AWS 官方指导进行数据导入
+
+[https://docs.aws.amazon.com/redshift/latest/dg/c_loading-data-best-practices.html](https://docs.aws.amazon.com/redshift/latest/dg/c_loading-data-best-practices.html)
+
+Amazon Redshift 是一个高性能的数据仓库服务，它支持 PB 级别的数据存储和复杂的分析查询。为了最大化 Redshift 的性能，AWS 提供了一系列官方的最佳实践指南来指导数据的导入过程。
+
+### 数据切割与压缩
+
+AWS 官方推荐在导入数据前，将大文件切割成 1MB 到 1GB 范围内、大小相近的多个小文件，并进行压缩。这样做可以显著提高数据的传输效率和导入速度。
+
+- **切割工具**：使用 `split` 命令可以将大文件切割成多个小文件。
+
+- **压缩工具**：使用 `lzop` 或 `gzip` 等工具对文件进行压缩。
+
+### 使用 COPY 命令
+
+Redshift 的 COPY 命令可以从 Amazon S3 直接将数据批量导入到 Redshift 表中。COPY 命令是并行执行的，可以利用 Redshift 的全部计算资源，从而加快数据导入速度。COPY 命令要求数据文件必须存储在 Amazon S3 中，并且文件大小和格式有一定的要求。
+
+### 监控与优化
+
+在数据导入过程中，AWS 提供了多种监控工具和服务，如 Amazon CloudWatch 和 AWS CloudTrail，用于记录、监控和警报数据导入的状态和性能。
+
+- **监控指标**：可以监控的数据导入指标包括数据导入速度、错误率、系统资源使用情况等。
+
+- **性能调优**：根据监控数据，可以对数据导入过程进行调优，如调整并行度、优化数据格式等。
+
+### 实际案例
+
+将一张 132GB 的 SQL Server 大表迁移到 Redshift，对切割、压缩后的以 JSON 格式导出的数据文件，使用 COPY 命令进行批量并行导入，在 1 个主节点、2 个计算节点的 Redshift 集群上，整个导入过程仅耗时 15 分钟左右。
+
+# 3. 普通方式迁移
+
+## 步骤 1: bcp 导出数据为本地文件
+
+使用 bcp 工具导出 SQL Server 数据库表到本地文件是数据迁移的第一步。bcp 工具能够高效地将数据从 SQL Server 实例复制到本地文件系统。
+
+- **导出时间**：根据数据量大小和服务器性能，导出时间可能会有所不同。例如，导出一个包含 1000 万行数据的表可能需要几分钟到几十分钟不等。
+
+- **文件大小**：导出的文件大小取决于表中数据的总量和数据类型。
+
+### bcp 导出命令示例
+
+
+```shell
+bcp "SELECT * FROM database.schema.table" queryout "/path/to/data_file.bcp" -c -T
+
+```
+
+- `database.schema.table`：指定要导出的数据库表。
+
+- `/path/to/data_file.bcp`：指定导出文件的路径和文件名。
+
+- `c`：指定以字符格式导出数据。
+
+- `T`：使用 Windows 身份验证。
+
+## 步骤 2: 使用 split 命令切分文件
+
+为了满足 Redshift 的数据导入要求，需要将导出的大型文件切割成多个小文件。
+
+- **切割大小**：根据 Redshift 的最佳实践，建议将文件切割成 1GB 以内的大小。
+
+- **切割时间**：切割时间取决于文件大小和系统性能。
+
+### split 命令示例
+
+
+```shell
+split -b 1g /path/to/data_file.bcp /path/to/split_file_part_
+
+```
+
+- `b 1g`：指定每个输出文件的大小为 1GB。
+
+- `/path/to/data_file.bcp`：指定要切割的源文件路径。
+
+- `/path/to/split_file_part_`：指定输出文件的前缀。
+
+## 步骤 3: 使用 lzop 压缩文件
+
+压缩文件可以减少上传到 S3 的数据量，从而加快上传速度。
+
+- **压缩比率**：压缩比率取决于数据的类型和特性，通常可以减少到原文件大小的 50% 到 70%。
+
+- **压缩时间**：压缩时间取决于文件大小和系统性能。
+
+### lzop 压缩命令示例
+
+
+```shell
+lzop /path/to/split_file_part_*
+
+```
+
+- `/path/to/split_file_part_*`：指定要压缩的文件模式。
+
+## 步骤 4: 使用 awscli 上传文件到 S3
+
+使用 awscli 工具将压缩后的文件上传到 Amazon S3。
+
+- **上传速度**：上传速度取决于网络带宽和 S3 的性能。
+
+- **上传时间**：上传时间取决于文件大小和上传速度。
+
+### awscli 上传命令示例
+
+
+```shell
+aws s3 cp --recursive /path/to/split_file_part_* s3://bucket-name/path/
+
+```
+
+- `--recursive`：递归上传所有文件。
+
+- `s3://bucket-name/path/`：指定 S3 存储桶的路径。
+
+## 步骤 5: 使用 COPY 语句导入 Redshift
+
+最后一步是使用 Redshift 的 COPY 命令将数据从 S3 导入到目标 Redshift 表中。
+
+- **导入速度**：根据 Redshift 的性能和数据量大小，导入速度可以达到每秒数GB。
+
+- **导入时间**：导入时间取决于数据量大小和导入速度。
+
+### COPY 命令示例
+
+
+```sql
+COPY schema.table FROM 's3://bucket-name/path/' CREDENTIALS 'aws_access_key_id=XXX;aws_secret_access_key=XXX' COMPUPDATE OFF;
+
+```
+
+- `schema.table`：指定目标 Redshift 表。
+
+- `s3://bucket-name/path/`：指定 S3 存储桶路径。
+
+- `CREDENTIALS`：指定 AWS 访问密钥。
+
+- `COMPUPDATE OFF`：关闭压缩更新。
+
+# 4. 并行和管道处理
+
+在 Linux 系统中，很多命令都是支持管道的，我们可以将前一个命令的输出作为后一个命令的输入，将多个命令拼成一个管道流作业，这就变成了并行作业。理想的迁移流程是一个流处理：一边导出数据、一边切块压缩、一边上传，不用等待前一步完整结束，前面的任务处理了多少数据，立即输出给到后面的任务去处理，没有阻塞。按照这样的思路，可以画出下面的任务时间图：
+
+![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/037b786d-f2e1-4bde-ba92-f30209dd7ae0/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133721Z&X-Amz-Expires=3600&X-Amz-Signature=aecfcd9676e4006eec44d76be0bacee6f465fd1849b26e64154cc8e6bb08e5d9&X-Amz-SignedHeaders=host&x-id=GetObject)
+
+## 利用管道实现并行处理
+
+在数据迁移的过程中，传统的串行处理方式存在效率瓶颈，特别是在处理大规模数据集时。为了提高迁移效率，可以利用 Linux 管道的特性来实现并行处理。
+
+### 管道的优势
+
+Linux 管道（pipe）允许将一个命令的输出直接作为另一个命令的输入，这种机制可以用来创建高效的数据流处理链。通过管道，可以将数据导出、切割、压缩和上传等步骤合并为一个连续的流，从而减少中间步骤的等待时间，提高整体迁移效率。
+
+### 实现管道流的关键技术
+
+- **命名管道（Named Pipe）**：也称为 FIFO（First In, First Out），是一种特殊类型的文件，允许一个进程的输出被另一个进程作为输入。命名管道可以作为不支持管道输出的命令与支持管道输入的命令之间的桥梁。
+
+- **后台进程（Background Process）**：在 Linux 中，可以通过在命令后添加 `&` 符号来将命令置于后台执行，这样可以并行执行多个任务，而不需要等待它们逐一完成。
+
+### 管道流处理的步骤
+
+1. **创建命名管道**：首先创建一个命名管道，作为数据流的通道。
+
+	
+```shell
+mkfifo /tmp/data_pipe
+
+```
+
+1. **导出数据到管道**：使用 bcp 导出数据，并将其输出重定向到命名管道。
+
+	
+```shell
+bcp "SELECT * FROM database.schema.table" queryout /tmp/data_pipe -c -T &
+
+```
+
+1. **切割数据**：从命名管道读取数据，使用 `split` 命令将数据流切割成多个小文件。
+
+	
+```shell
+cat /tmp/data_pipe | split -b 1g - /tmp/split_file_part_
+
+```
+
+1. **压缩数据**：将切割后的数据流压缩，使用 `lzop` 命令。
+
+	
+```shell
+cat /tmp/data_pipe | split -b 1g - | lzop >
+
+```
+
+1. **上传数据到 S3**：将压缩后的数据流上传到 Amazon S3，使用 `awscli`。
+
+	
+```shell
+cat /tmp/data_pipe | split -b 1g - | lzop | aws s3 cp --recursive /tmp/split_file_part_* s3://bucket-name/path/ &
+
+```
+
+1. **导入数据到 Redshift**：最后，使用 Redshift 的 COPY 命令将数据从 S3 导入到目标表中。
+
+### 性能考量
+
+- **并行度**：通过并行执行多个后台进程，可以显著提高数据迁移的速度。
+
+- **资源利用率**：需要监控系统资源的使用情况，如 CPU、内存和网络带宽，以确保不会超过系统的最大承载能力。
+
+通过利用 Linux 管道的并行处理能力，我们可以有效地提高大规模数据迁移的效率，减少迁移时间，并降低对系统资源的占用。
+
+# 5. 使用命名管道强制重定向 bcp 输出
+
+[https://www.wikiwand.com/en/Named_pipe](https://www.wikiwand.com/en/Named_pipe)
+
+命名管道（Named pipe）提供了一种在 Linux 系统中实现强制重定向的方法，允许我们将不支持管道输出的命令（如 `bcp`）的输出直接传输到支持管道输入的命令中，从而实现高效的数据迁移流程。
+
+### 命名管道的原理
+
+命名管道是一种特殊的文件系统对象，它允许不相关的进程进行双向通信。与匿名管道（仅在有亲缘关系的进程间使用）不同，命名管道可以在没有血缘关系的进程间进行通信，并且可以跨网络使用。
+
+### 使用命名管道
+
+在数据迁移的场景中，我们可以创建一个命名管道，并将 `bcp` 导出的数据直接写入该管道。这样，其他进程就可以从管道中读取数据并进行后续处理，如切割、压缩和上传。
+
+创建命名管道
+
+
+```shell
+mkfifo /path/to/named_pipe
+
+```
+
+使用 `bcp` 导出数据到命名管道
+
+
+```shell
+bcp "SELECT * FROM database.schema.table" queryout /path/to/named_pipe -c -T &
+
+```
+
+从命名管道读取数据
+
+*其他命令可以从命名管道中读取数据，如 *`*split*`*、*`*lzop*`* 和 *`*awscli*`*，实现数据的并行处理。*
+
+
+```shell
+cat /path/to/named_pipe | split -b 1g - /path/to/split_file_part_ &
+cat /path/to/named_pipe | lzop | aws s3 cp --recursive /path/to/split_file_part_* s3://bucket-name/path/ &
+
+```
+
+### 性能优势
+
+使用命名管道进行数据迁移的主要优势在于：
+
+- **减少磁盘I/O**：由于数据不需要首先写入磁盘再读取，因此减少了磁盘I/O操作，提高了迁移效率。
+
+- **并行处理**：多个进程可以并行处理数据流，减少了总的迁移时间。
+
+- **实时传输**：数据可以实时传输到下一个处理步骤，无需等待前一个步骤完成。
+
+# 6. 管道上的数据迁移实现
+
+ 是一个利用 Linux 命名管道来加速 SQL Server 数据导出到 Amazon S3 的工具。它通过 UNIX 管道无缝地传输数据，支持多种通用数据格式，如 CSV、TSV 和 JSON。
+
+![563200.gif](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/8155a566-2d0c-4ec4-86e6-4e496e95687e/563200.gif?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133722Z&X-Amz-Expires=3600&X-Amz-Signature=c5d65f4132f4a47d54d2cc1f4a32ff889dcc6de132cd25903b09efb7c569b858&X-Amz-SignedHeaders=host&x-id=GetObject)
+
+### 工作原理
+
+StreamXfer 的核心工作原理是创建一个命名管道，将 SQL Server 的数据流式传输到目标存储，如本地文件系统或 Amazon S3。这个过程避免了将数据首先写入磁盘再读取的需要，从而减少了 I/O 操作，提高了迁移效率。
+
+### 关键特性
+
+- **格式支持**：支持 CSV、TSV 和 JSON 格式的数据传输，满足不同场景的需求。
+
+- **压缩支持**：支持 LZOP 和 GZIP 压缩，可以在传输前对数据进行压缩，减少网络传输量。
+
+- **平台支持**：支持 Linux 和 macOS 操作系统，满足不同用户的使用环境。
+
+- **无缝集成**：可以与现有的 SQL Server 和 Redshift 工具链无缝集成，无需修改现有的数据迁移流程。
+
+### 安装和使用
+
+StreamXfer 可以通过 PyPI 安装。
+
+
+```shell
+python3 -m pip install streamxfer
+
+```
+
+StreamXfer 可以作为命令行工具或 Python 库使用。
+
+
+```shell
+stx [OPTIONS] PYMSSQL_URL TABLE OUTPUT_PATH
+
+```
+
+例如，将数据从 SQL Server 迁移到本地目录：
+
+
+```shell
+stx 'mssql+pymssql://user:pass@host:port/db' '[dbo].[test]' /local/path/to/dir/
+
+```
+
+在 Python 代码中，可以导入 StreamXfer 类，并使用它来构建和传输数据流。
+
+
+```python
+from streamxfer import StreamXfer
+from streamxfer.format import Format
+from streamxfer.compress import CompressType
+
+sx = StreamXfer(
+    "mssql+pymssql://user:pass@host:port/db",
+    format=Format.CSV,
+    compress_type=CompressType.LZOP,
+    chunk_size=1000000,
+)
+sx.build("[dbo].[test]", path="s3://bucket/path/to/dir/")
+sx.pump()
+
+```
+
+### 性能优势
+
+使用 StreamXfer 进行数据迁移的主要性能优势包括：
+
+- **减少磁盘使用**：由于数据流直接传输，减少了对本地磁盘的依赖。
+
+- **提高传输速度**：通过管道传输数据，减少了数据在各个步骤之间的等待时间。
+
+- **支持并行处理**：可以在导出数据的同时进行切割、压缩和上传，实现了真正的并行处理。
+
+# 7. 总结
+
+利用 Linux 管道文件来加速 SQL Server 数据导出是一种有效的方法。通过并行处理和强制重定向技术，我们可以显著提高数据迁移的效率，减少迁移时间，并降低对系统资源的需求。
+
+<br/>
+

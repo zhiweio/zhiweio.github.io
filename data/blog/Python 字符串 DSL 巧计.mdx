@@ -1,0 +1,129 @@
+---
+title: 'Python 字符串 DSL 巧计'
+date: '2023-02-18'
+lastmod: '2024-12-01'
+tags: ['Python', 'DSL', 'SQLite']
+summary: '本文介绍了一种使用 SQLite 实现字符串 DSL 的方法，允许用户在字符串中动态渲染表达式，如获取当前日期和时间。通过定义 SQL 查询和解析表达式，用户可以方便地生成包含动态数据的字符串。示例代码展示了如何使用该方法来处理不同格式的字符串，并强调了这种方法相较于直接执行 Python 代码的安全性和友好性。'
+---
+
+需求是给字符串加上类似模板语言的支持，比如 `'today is current_date'` 得到 `'today is 2023-02-18'` 。
+
+最简单的方式是直接替换，比如下面的实现：
+
+
+```python
+current_date = str(datetime.today().date()))
+'today is current_date'.replace('current_date', current_date)
+```
+
+<br/>
+
+这样不方便扩展，写起来很繁琐，支持的 `Function` 都需要硬编码实现，而且用户也需要记录这种新造的语法。
+
+这个需求看上去是一个简易的字符串 DSL 实现，比较接近的是 JSON 的 DSL，也很常用，比如 `jq` 。
+
+一种通用易理解的语法，我想到了 SQL，Python 内置 SQLite，直接在字符串里写 SQL 就好了。
+
+现在只要很少的代码就可以实现这个功能。
+
+
+```python
+import re
+import sqlite3
+from typing import List, Dict, Any
+
+_PAT = re.compile(r"{{[^{}]*}}")
+
+
+def run_query(query) -> Dict[str, Any]:
+    with sqlite3.connect(":memory:") as connection:
+        connection.row_factory = sqlite3.Row
+        cursor = connection.cursor()
+        try:
+            cursor.execute(query)
+            row = cursor.fetchone()
+        except sqlite3.OperationalError as e:
+            raise ValueError(f"Execute query failed: {query}, error: {e}")
+        if row:
+            return dict(row)
+        return dict()
+
+
+def expression_parse(string) -> List[str]:
+    exps = re.findall(_PAT, string)
+    return exps
+
+
+def expression_query(exp):
+    function = get_function(exp)
+    query = f"SELECT {function} AS result"
+    ret = run_query(query)
+    if ret:
+        return ret["result"]
+    raise ValueError(f"Invalid expression: {exp}, result is None")
+
+
+_alias = {
+    "CURRENT_TIME": "time('now', 'localtime')",
+    "CURRENT_TIMESTAMP": "unixepoch('now', 'localtime')",
+    "CURRENT_DATE": "date('now', 'localtime')",
+    "CURRENT_DATETIME": "datetime('now', 'localtime')",
+}
+
+
+def get_function(exp: str):
+    function = exp.replace("{", "").replace("}", "").strip()
+    function = _alias.get(function.upper(), function)
+    return function
+
+
+def render(string: str):
+    """A string containing expressions can be dynamically rendered based on SQLite functions.
+    To ensure proper evaluation, expressions must be encapsulated within double curly braces '{{}}'.
+
+    >>> render("s3://landing/appddm_{{date('now', 'localtime')}}/{{strftime('%Y%m%d','now', 'localtime')}}.xlsx")
+    's3://landing/appddm_2023-01-16/20230116.xlsx'
+
+    :param string:
+    """
+    exps = expression_parse(string)
+    results = {exp: expression_query(exp) for exp in exps}
+    for k, v in results.items():
+        string = string.replace(k, str(v))
+    return string
+
+```
+
+<br/>
+
+Examples:
+
+
+```python
+print(render("s3://bucket/demo.csv"))
+print(render("s3://bucket/demo/{{current_date}}.csv"))
+print(render("s3://bucket/demo/{{current_datetime}}.csv"))
+print(render("s3://bucket/demo/{{current_time}}.csv"))
+print(render("s3://bucket/demo/{{current_timestamp}}.csv"))
+s = "s3://bucket/demo/{{date('now', 'localtime')}}/{{strftime('%Y%m%d%H%M%S', 'now', 'localtime')}}.xlsx"
+print(render(s))
+```
+
+
+```python
+s3://bucket/demo.csv
+s3://bucket/demo/2023-02-18.csv
+s3://bucket/demo/2023-02-18 22:53:49.csv
+s3://bucket/demo/22:53:49.csv
+s3://bucket/demo/1676760829.csv
+s3://bucket/demo/2023-02-18/20230218225349.xlsx
+```
+
+<br/>
+
+**思考**
+
+直接 `ast.literal_eval` 更简单啊，一开始我没想起来，这当然也可以，不过 SQL 对于非开发者用户更友好，而且直接引用执行 Python 代码的话对用户而言没多少约束，像是个漏洞。
+
+<br/>
+

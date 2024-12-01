@@ -1,0 +1,126 @@
+---
+title: '如何将 10TB 数据从 SQL Server 迁移到 Amazon Redshift'
+date: '2023-02-19'
+lastmod: '2024-12-01'
+tags: ['Data Pipeline', 'Redshift', 'MSSQL']
+summary: '本文讨论了如何将10TB数据从SQL Server迁移到Amazon Redshift的过程，包括RDS还原和Redshift数据迁移的方案演变。数据迁移涉及使用AWS服务如S3、Lambda、Glue和Step Function，确保数据从外部数据中心顺利迁移到AWS云，并实现定期同步。整个过程包括Schema转换、数据导出、压缩和上传，以及通过Step Function调度的完整数据管道。'
+---
+
+![CDW-RDS-Redshift_Data_Pipeline.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/6f73ffdf-fd00-4537-8bb0-a71257360228/CDW-RDS-Redshift_Data_Pipeline.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133729Z&X-Amz-Expires=3600&X-Amz-Signature=810a997b791473d601ec81e772638736f90e134f73b0d734ee19fa3d956f5678&X-Amz-SignedHeaders=host&x-id=GetObject)
+
+原图
+
+[https://www.onemodel.app/d/exYDPG9cPmybE3sB5YW2D](https://www.onemodel.app/d/exYDPG9cPmybE3sB5YW2D)
+
+<br/>
+
+## 背景
+
+原始数据存储在外部数据中心的 SQL Server 上，需要将其迁移上 AWS 云，数据库切换到 Amazon Redshift，先前 ETL 方案使用的是 SSIS Package，也同样需要切换到 AWS 架构，本文只谈论数据迁移部分。
+
+整个数据迁移方案从初次提出需求到最后完整落地花了两个半月时间，一开始只是需要写个一次的性脚本工具来简单处理 Schema 转换，将 SQL Server 的库表结构迁到 Redshift，后期陆续新增需求： RDS 还原 → 自动定期还原 → 迁移数据到 Redshift → 定期将数据同步到 Redshift，最后发现这演变成了一条完整的 Data Pipeline。
+
+这是一个传统数仓上云的场景，环境隔离，有诸多限制，所以无法借助 CDC 做增量同步。
+
+## 方案演变
+
+### RDS 还原
+
+SQL Server 的备份文件会定时上传到 S3，分为每周一次全量和每天一次差异，为了能在备份上传完成后及时还原到 RDS，采用订阅 S3 Event Notifications 的方式，通过 Lambda Function 处理并触发启动 Step Function，随后调度 Glue Job 进行 RDS 还原，还原是一个 long time 作业，一次需要十个小时以上的时间。
+
+RDS 还原任务的处理逻辑较为复杂，会记录每个任务到数据表中（这里使用了 Redshift），检查并更新状态，支持幂等，也就是避免重复还原相同的备份，更具体的细节本文中不做表述。
+
+### Redshift 数据迁移
+
+**Schema**
+
+基于  进行扩展实现 Schema 转换。
+
+<br/>
+
+**Data**
+
+- 借助 `bcp` 从 RDS 导出数据，格式默认选用 TSV（支持 JOSN、CSV）；
+
+- 使用 Linux `split` 将大文件切分为小块；
+
+- `lzop` 压缩文件块（支持 GZIP）；
+
+- 上传到 S3；
+
+- 使用 Redshift `COPY` 命令 load 数据（Best practice for Loading data）。
+
+<br/>
+
+**Pipeline**
+
+Pre-requisite
+
+1. RDS 实例是唯一的、只在一个 AWS 环境中（pre-dev），Redshift 集群在 pre-dev、dev、test、prod 环境都有；
+
+1. Glue 没有提供以 `sudo` 权限安装软件的方式，无法安装 bcp、lzop；
+
+1. 有一台 Linux EC2 和 RDS 在同一个 VPC，这也是测试机器；
+
+1. 使用 AWS Key 可以直接访问每个环境的 Redshift 集群，往集群写数据是通过发请求 load S3，不需要直连数据库，也就是不需要在同一个 VPC。
+
+<br/>
+
+**Solution**
+
+1. Linux EC2 作为数据迁移任务的 Execution，从 RDS 下载并往不同环境的 Redshift 集群写数据；
+
+	1. Python 开发的工具（dm4）组合并调度 bcp、split、lzop、s3 upload、redshift copy 等步骤；
+
+	1. dm4 使用 SQLite 记录任务，缓存元数据；
+
+	1. dm4 使用的各种配置信息（数据库连接、S3 位置等）存放在不同 AWS 环境的 Secrects Manager；
+
+1. AWS System Manager（SSM） 作为 Agent，通过它来向 EC2 发送命令执行（AWS-RunShellScript），并管理命令执行的生命周期和收集日志；
+
+1. Glue Job 请求 SSM 发送命令并一直阻塞等待结果返回，这是一个 long time 作业，需要数个小时；
+
+1. Glue Job 请求 SSM 检查 EC2 上是否有 `ssm command` 正在执行，阻塞直到空闲；
+
+	1. dm4 对磁盘 IO、带宽 和 CPU 资源开销都很大，所以需要限制同时运行的任务数量；
+
+1. 以上所有 Job 在同一个 Step Function 中调度。
+
+<br/>
+
+### Data Pipeline
+
+RDS 还原部分编排为一个 Step Function 作业，Redshift 数据迁移也是一个 Step Function 作业，通过一个 Lambda Function 来串联起前后两部分，从而实现完整的 Pipeline。
+
+Pipeline 一次完整的执行流程为，上游 SQLServer 的一个库备份完成上传到 S3，事件触发 Lambda 调度 RDS 还原的 Step Function 执行，还原完成后触发 Lambda 调度 Redshift 数据迁移的 Step Function 执行。
+
+<br/>
+
+## 参考
+
+- [How do I find the data types of the columns of a specified table?](https://learn.microsoft.com/en-us/sql/relational-databases/system-catalog-views/querying-the-sql-server-system-catalog-faq?view=sql-server-ver16#_FAQ7)
+
+- [In SQL Server, how do I generate a CREATE TABLE statement for a given table?](https://stackoverflow.com/questions/21547/in-sql-server-how-do-i-generate-a-create-table-statement-for-a-given-table/317864#317864)
+
+- [Informatica - Microsoft SQL Server Source and Amazon Redshift Target](https://docs.informatica.com/data-replication/data-replication/9-8-0/datatype-mapping-reference/datatype-mappings-for-microsoft-sql-server-sources/microsoft-sql-server-source-and-amazon-redshift-target.html)
+
+- [sqllines - SQL Server to Redshift Migration Reference](https://www.sqlines.com/sql-server-to-redshift)
+
+- [tobymao/sqlglot - Python SQL Parser and Transpiler](https://github.com/tobymao/sqlglot)
+
+- [Redshift - Data type differences between Amazon Redshift and supported PostgreSQL and MySQL databases](https://docs.aws.amazon.com/redshift/latest/dg/federated-data-types.html)
+
+- [Redshift - Data conversion parameters](https://docs.aws.amazon.com/redshift/latest/dg/copy-parameters-data-conversion.html#copy-acceptanydate)
+
+- [Loss of numeric precision](https://docs.aws.amazon.com/redshift/latest/dg/copy-usage_notes-copy-from-json.html#copy-usage-json-rounding)
+
+- [simonw/sqlite-utils: Python CLI utility and library for manipulating SQLite databases (github.com)](https://github.com/simonw/sqlite-utils)
+
+- [bcp Utility - SQL Server | Microsoft Learn](https://learn.microsoft.com/en-us/sql/tools/bcp-utility?redirectedfrom=MSDN&view=sql-server-ver16)
+
+- [Redshift Database Benchmarks: COPY Performance of CSV, JSON, and Avro | by Chris Merrick | Medium](https://medium.com/@cmerrick/redshift-database-benchmarks-copy-performance-of-csv-json-and-avro-9062f71f8148)
+
+- [Redshift Database Benchmarks: COPY Performance with Compressed Files | by Chris Merrick | Medium](https://medium.com/@cmerrick/redshift-database-benchmarks-copy-performance-with-compressed-files-2041b8098366)
+
+<br/>
+

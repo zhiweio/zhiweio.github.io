@@ -1,0 +1,264 @@
+---
+title: 'AWS RDS SQLServer 还原故障 Troubleshooting'
+date: '2023-02-18'
+lastmod: '2024-12-01'
+tags: ['MSSQL', 'Troubleshooting']
+summary: '本文讨论了在AWS RDS SQLServer中进行数据库还原时遇到的故障及其排查过程。通过定期备份和使用T-SQL存储过程进行还原，作者记录了在执行还原任务时出现的异常，包括连接丢失和任务中断。最终发现，RDS实例的重启和EC2节点的更换是导致这些问题的根本原因。'
+---
+
+### 背景
+
+其它数据中心的 SQLServer 定期备份并将备份文件上传 S3，再还原到 AWS RDS（SQLServer），采用每周末一次全量备份+工作日每天一次差异备份的执行计划。
+
+我使用 `pymssql ` 库访问 AWS RDS，并执行 AWS 提供的 `stored procedure` 来进行数据库还原，T-SQL 如下，详见 AWS 文档。 
+
+
+```sql
+exec msdb.dbo.rds_restore_database
+	@restore_db_name='database_name',
+	@s3_arn_to_restore_from='arn:aws:s3:::bucket_name/file_name.extension',
+	@with_norecovery=0|1,
+	[@kms_master_key_arn='arn:aws:kms:region:account-id:key/key-id'],
+	[@type='DIFFERENTIAL|FULL'];
+```
+
+[https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/SQLServer.Procedural.Importing.html#SQLServer.Procedural.Importing.Native.Using.Restore](https://docs.aws.amazon.com/AmazonRDS/latest/UserGuide/SQLServer.Procedural.Importing.html#SQLServer.Procedural.Importing.Native.Using.Restore)
+
+<br/>
+
+创建一个还原 Task 后，轮询 Task 执行状态。
+
+T-SQL：
+
+
+```sql
+exec msdb.dbo.rds_task_status
+	[@db_name='database_name'],
+	[@task_id=ID_number];
+```
+
+<br/>
+
+代码逻辑如下，这里借助 `redo` 在数据库连接丢失后进行重试，重新建立数据库连接。
+
+
+```python
+@redo.retriable(attempts=5, sleeptime=60, retry_exceptions=(DisconnectError,))
+def wait(self, creds: SqlCreds, delay=60):
+    """
+    SQL Server also has an "Idle Connection Timeout" setting, which determines how long a connection
+    can be idle (not used) before it is closed. This setting is controlled by the "Remote Query Timeout"
+    configuration option and is set to 600 seconds (10 minutes) by default.
+    """
+    conn = creds.connect()
+    try:
+        while True:
+            status = self.status(conn=conn)
+            lifecycle = status["lifecycle"]
+            database = self.meta["db_name"]
+            if lifecycle in (LifeCycle.IN_PROGRESS, LifeCycle.CREATED):
+                LOG.info(f"Waiting for {database} to be restored...")
+                time.sleep(delay)
+            elif lifecycle == LifeCycle.SUCCESS:
+                return
+            elif lifecycle == LifeCycle.ERROR:
+                raise pymssql.OperationalError(
+                    f"Error restoring {database}\t{json.dumps(status, default=str)}"
+                )
+            else:
+                raise ValueError(
+                    f"Unknown lifecycle: {lifecycle}\t{json.dumps(status, default=str)}"
+                )
+    except pymssql.OperationalError as e:
+        LOG.error(f"Error waiting: {e}")
+        if creds.is_disconnect(e, conn):
+            raise DisconnectError(f"PyMSSQL connection has gone away: {e}")
+    finally:
+        conn.close()
+```
+
+<br/>
+
+### 异常 1
+
+这是 RDS  `rds_task_status` 的执行异常日志：
+
+
+```plain text
+[2023-02-17 03:28:23.083] Aborted the task because of a task failure or a concurrent RESTORE_DB_DIFFERENTIAL request.
+[2023-02-17 03:28:23.643] Task has been aborted
+[2023-02-17 03:28:23.910] Task was initiated on server name: EC2AMAZ-7POJKEI, current server name: EC2AMAZ-T85JIN4. Cannot complete the task, please try again.
+```
+
+<br/>
+
+### 异常 2
+
+这是 Python 程序的执行异常日志：
+
+
+```python
+2023-02-17 02:02:33,089: ERROR : Error waiting: (20047, b'DB-Lib error message 20047, severity 9:\nDBPROCESS is dead or not enabled\n')
+2023-02-17 02:04:02,066: INFO : retry: calling wait with args: (FullBackup(id='MARTPH_20230217|2023-02-11|FULL|1|2023-02-17'), <bayer_cdp_common_utils.mssql_handler.SqlCreds object at 0x7ff9144bc4e0>), kwargs: 
+{}
+, attempt #3
+2023-02-17 02:07:17,487: INFO : retry: calling wait with args: (FullBackup(id='MARTPH_20230217|2023-02-11|FULL|1|2023-02-17'), <bayer_cdp_common_utils.mssql_handler.SqlCreds object at 0x7ff9144bc4e0>), kwargs: 
+{}
+, attempt #4
+2023-02-17 02:11:41,495: INFO : retry: calling wait with args: (FullBackup(id='MARTPH_20230217|2023-02-11|FULL|1|2023-02-17'), <bayer_cdp_common_utils.mssql_handler.SqlCreds object at 0x7ff9144bc4e0>), kwargs: 
+{}
+, attempt #5
+2023-02-17 02:12:41,536: INFO : retry: Giving up on wait
+Traceback (most recent call last):
+  File "/tmp/runscript.py", line 230, in <module>
+    raise e_type(e_value).with_traceback(new_stack)
+  File "/tmp/glue-python-scripts-l7dpyz1k/ph-cdw-sqlserver-restore.py", line 90, in <module>
+  File "/tmp/glue-python-scripts-l7dpyz1k/ph-cdw-sqlserver-restore.py", line 56, in _wait_for_restore
+  File "/glue/lib/installation/bayer_cdp_common_utils/rds_restore_handler.py", line 837, in wait_for_restore
+    bak.full_backup.wait(creds)
+  File "/glue/lib/installation/redo/__init__.py", line 215, in _retriable_wrapper
+    return retry(func, args=args, kwargs=kwargs, *retry_args, **retry_kwargs)
+  File "/glue/lib/installation/redo/__init__.py", line 170, in retry
+    return action(*args, **kwargs)
+  File "/glue/lib/installation/bayer_cdp_common_utils/rds_restore_handler.py", line 408, in wait
+    conn = creds.connect()
+  File "/glue/lib/installation/bayer_cdp_common_utils/mssql_handler.py", line 36, in connect
+    autocommit=autocommit,
+  File "src/pymssql/_pymssql.pyx", line 653, in pymssql._pymssql.connect
+pymssql._pymssql.OperationalError: (20009, b'DB-Lib error message 20009, severity 9:\nUnable to connect: Adaptive Server is unavailable or does not exist (fusion-q-1.cpmknfgp0x9h.rds.cn-north-1.amazonaws.com.cn)\nNet-Lib error during Connection timed out (110)\nDB-Lib error message 20009, severity 9:\nUnable to connect: Adaptive Server is unavailable or does not exist (fusion-q-1.cpmknfgp0x9h.rds.cn-north-1.amazonaws.com.cn)\nNet-Lib error during Connection timed out (110)\n')
+```
+
+<br/>
+
+### Troubleshoots
+
+从以下部分日志可以发现因为数据库服务的问题连接会话中断了，并且三次重新连接都失败了。
+
+
+```python
+2023-02-17 02:02:33,089: ERROR : Error waiting: (20047, b'DB-Lib error message 20047, severity 9:\nDBPROCESS is dead or not enabled\n')
+...
+, attempt #5
+2023-02-17 02:12:41,536: INFO : retry: Giving up on wait
+```
+
+<br/>
+
+以上问题出现了两次，第一次出现时我以为是 `pymssql` 的 `connection` 超时被 server 主动中断了，于是我加上 `redo` 机制，希望在连接丢失后重新创建并使用，几天之后发生了同样的报错。
+
+我非常纳闷，并在看到 GitHub 上的相似 issue 后怀疑是重试创建连接的方式有问题。
+
+[https://github.com/rails-sqlserver/activerecord-sqlserver-adapter/issues/402#issuecomment-1356793443](https://github.com/rails-sqlserver/activerecord-sqlserver-adapter/issues/402#issuecomment-1356793443)
+
+<br/>
+
+我又认真看了日志，试图找出一些蛛丝马迹。按照代码执行流程，下面是第一步的报错信息：
+
+
+```python
+(20047, b'DB-Lib error message 20047, severity 9:\nDBPROCESS is dead or not enabled\n')
+```
+
+<br/>
+
+这是下一步 `reconnect` 的报错：
+
+
+```python
+(20009, b'DB-Lib error message 20009, severity 9:\nUnable to connect: Adaptive Server is unavailable or does not exist (xxx.amazonaws.com.cn)\nNet-Lib error during Connection timed out (110)\nDB-Lib error message 20009, severity 9:\nUnable to connect: Adaptive Server is unavailable or does not exist (xxx.amazonaws.com.cn)\nNet-Lib error during Connection timed out (110)\n')
+```
+
+<br/>
+
+显然之前没有仔细看，虽然都是数据库连接的异常，但两次异常不能视之相同，第一次异常是数据库连接访问不到数据库了，第二次异常是连接超时（Connection timed out）。
+
+<br/>
+
+先暂停去看异常 1，在官方文档中找到解释：
+
+> Task was initiated on server name: EC2AMAZ-ABCDEFG, current server name: EC2AMAZ-MNOPQRS. Cannot complete the task, please try again.
+Usually you’ll see this error when a task is in progress on a mirrored instance and a failover happens. The new principal or primary does not know about the task in progress. This error can also appear when the task is in progress and the underlying EC2 machine has been replaced with a different one. In either case, reissue the task to solve the error.
+
+[Migrating Microsoft SQL Server Enterprise Workloads to Amazon RDS: Part 1 | AWS Database Blog](https://aws.amazon.com/cn/blogs/database/migrating-microsoft-sql-server-enterprise-workloads-to-amazon-rds-part-1/?highlight=Task%20was%20initiated%20on%20server%20name#:~:text=Task%20was%20initiated%20on%20server%20name%3A%20EC2AMAZ%2DABCDEFG%2C%20current%20server%20name%3A%20EC2AMAZ%2DMNOPQRS.%20Cannot%20complete%20the%20task%2C%20please%20try%20again.)
+
+很让人意外，RDS 实例底层的 EC2 节点难道换了？我决定去 AWS RDS 控制台看一下。
+
+💡 这里补充一点，此处失败的还原的任务是差异备份的还原（DIFFERENTIAL），分为两步，第一步还原全量备份的 bak 文件，第二步还原差异备份的 bak 文件，两步合在一起为一次完整的 SQLServer 差异还原。
+
+<br/>
+
+首先注意到 RDS 实例开启了自动备份的功能。
+
+![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/5b335362-358c-4aad-bbb3-bd6af2cba6a3/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133732Z&X-Amz-Expires=3600&X-Amz-Signature=3c3f68fa8637ee49b45d9cc80f1d9421e6d4b305e17ee637e6387585edf8df63&X-Amz-SignedHeaders=host&x-id=GetObject)
+
+![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/c714cb60-b636-4b3e-8b62-095afb82fd46/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133732Z&X-Amz-Expires=3600&X-Amz-Signature=cdd2bdf26bbfbee6d5fd634c5bf949ba3a96f16cd50152165627942cba0edb6b&X-Amz-SignedHeaders=host&x-id=GetObject)
+
+<br/>
+
+可以从 events 中看到最近备份的记录。
+
+![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/8a267222-cf35-4abd-8e61-ec165c941173/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133732Z&X-Amz-Expires=3600&X-Amz-Signature=af82cd3ad03f480c37e15b4686ed6bbdbfb7c69144027e78301c9f2d4b1b16e6&X-Amz-SignedHeaders=host&x-id=GetObject)
+
+<br/>
+
+我翻到 RDS 服务日志，看看发生了什么，有没有异常记录。
+
+![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/de27652b-5ef1-4795-b438-9aef3f48de7a/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133732Z&X-Amz-Expires=3600&X-Amz-Signature=d6b52c7edbfa1146a97733039bff167fb1dc24ff9ea63bcca11b60de2c0c3a5c&X-Amz-SignedHeaders=host&x-id=GetObject)
+
+
+```plain text
+2023-02-17 02:34:16.42 Server      Microsoft SQL Server 2016 (SP3) (KB5003279) - 13.0.6300.2 (X64) 
+	Aug  7 2021 01:20:37 
+	Copyright (c) Microsoft Corporation
+	Standard Edition (64-bit) on Windows Server 2016 Datacenter 10.0 <X64> (Build 14393: ) (Hypervisor)
+
+2023-02-17 02:34:16.43 Server      UTC adjustment: 0:00
+2023-02-17 02:34:16.43 Server      (c) Microsoft Corporation.
+2023-02-17 02:34:16.43 Server      All rights reserved.
+2023-02-17 02:34:16.43 Server      Server process ID is 4760.
+2023-02-17 02:34:16.43 Server      System Manufacturer: 'Amazon EC2', System Model: 'm5.xlarge'.
+2023-02-17 02:34:16.43 Server      Authentication mode is MIXED.
+2023-02-17 02:34:16.43 Server      Logging SQL Server messages in file 'D:\rdsdbdata\Log\ERROR'.
+2023-02-17 02:34:16.43 Server      The service account is 'awscn\EC2AMAZ-T85JIN4$'. This is an informational message; no user action is required.
+2023-02-17 02:34:16.43 Server      Registry startup parameters: 
+	 -d D:\rdsdbdata\DATA\master.mdf
+	 -e D:\rdsdbdata\Log\ERROR
+	 -l D:\rdsdbdata\DATA\mastlog.ldf
+	 -k 20.000000
+	 -T 3226
+2023-02-17 02:34:16.43 Server      Command Line Startup Parameters:
+	 -s "MSSQLSERVER"
+...
+
+2023-02-13 22:08:52.60 Server      Microsoft SQL Server 2016 (SP3) (KB5003279) - 13.0.6300.2 (X64) 
+	Aug  7 2021 01:20:37 
+	Copyright (c) Microsoft Corporation
+	Standard Edition (64-bit) on Windows Server 2016 Datacenter 10.0 <X64> (Build 14393: ) (Hypervisor)
+
+2023-02-13 22:08:52.60 Server      UTC adjustment: 0:00
+2023-02-13 22:08:52.60 Server      (c) Microsoft Corporation.
+2023-02-13 22:08:52.60 Server      All rights reserved.
+2023-02-13 22:08:52.60 Server      Server process ID is 144.
+2023-02-13 22:08:52.60 Server      System Manufacturer: 'Amazon EC2', System Model: 'm5.xlarge'.
+2023-02-13 22:08:52.60 Server      Authentication mode is MIXED.
+2023-02-13 22:08:52.60 Server      Logging SQL Server messages in file 'D:\rdsdbdata\Log\ERROR'.
+2023-02-13 22:08:52.60 Server      The service account is 'awscn\EC2AMAZ-7POJKEI$'. This is an informational message; no user action is required.
+2023-02-13 22:08:52.60 Server      Registry startup parameters: 
+	 -d D:\rdsdbdata\DATA\master.mdf
+	 -e D:\rdsdbdata\Log\ERROR
+	 -l D:\rdsdbdata\DATA\mastlog.ldf
+	 -k 20.000000
+	 -T 3226
+2023-02-13 22:08:52.60 Server      Command Line Startup Parameters:
+	 -s "MSSQLSERVER"
+...
+```
+
+<br/>
+
+很明显，RDS 实例被重启了，并且 EC2 节点也更换了，重启的时间间隔为 7 天，对应自动备份设置的时间。到这里，两个异常的原因都找到了。
+
+RDS 实例重启导致 `pymssql` 的连接丢失并且重试失败，RDS 重启切换 EC2 导致差异还原两个步骤执行在不同的 EC2 上。
+
+<br/>
+

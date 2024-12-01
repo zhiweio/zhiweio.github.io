@@ -1,0 +1,3 @@
+notion-client
+notion-database
+python-dotenv

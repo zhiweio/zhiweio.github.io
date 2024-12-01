@@ -1,0 +1,132 @@
+---
+title: '简单高效地从 DynamoDB 同步数据到 Redshift'
+date: '2024-06-14'
+lastmod: '2024-12-01'
+tags: ['Redshift', 'DynamoDB']
+summary: '本文介绍了如何简单高效地将DynamoDB的数据同步到Redshift。通过全量扫描DynamoDB并使用COPY命令导入数据到临时表，随后利用MERGE和DELETE语句实现目标表的批量更新和删除，确保数据一致性。方案设计充分利用了Redshift的ETL能力，避免了引入其他AWS组件的额外费用，满足了低频率更新和小数据量的需求。'
+---
+
+![PixPin_2024-12-01_21-33-02-tuya.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/b2332c73-3905-4929-a61e-487aeb094203/PixPin_2024-12-01_21-33-02-tuya.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133727Z&X-Amz-Expires=3600&X-Amz-Signature=136b3b56b992dccc60deb7ae2b6e79da0ae1244e6968a65ed25c4bec6754ac99&X-Amz-SignedHeaders=host&x-id=GetObject)
+
+需求很简单，将一张 DynamoDB 的表数据同步到 Redshift 表，需要两张表数据保持一致，数据量不大，最多 10 万级别，Dynamo 表的更新为不定时地人工发布，频率更新不高，这种场景下如何设计简单易实现的方案？
+
+<br/>
+
+### 问题拆解分析
+
+**数据更新频率低**
+
+所以不必做实时同步，引入 DynamoDB Streams 使得系统变复杂，设置一个定时任务触发器就可以了。
+
+**数据量不大**
+
+10 万级别的数据，每次扫 DynamoDB 全表取数是可以接受得，不需要做 CDC（Change data capture），引入和维护实时数据流的成本相对离线处理是高昂的。
+
+**数据保持一致**
+
+DynamoDB 和 Redshift 表每次同步后保持一致，需要做数据比对，找出新增、修改和删除的数据，当然暴力一点也可以对 Redshift 表进行全删全插，但会影响 Redshift 表，致使一段时间的不可用状态，不建议这样操作。
+
+<br/>
+
+### 方案设计实现
+
+全量扫描 DynamoDB 数据导入到 Redshift 表，可以直接使用 Redshift COPY 命令，语法如下：
+
+
+```sql
+copy <redshift_tablename> from 'dynamodb://<dynamodb_table_name>'
+authorization
+readratio '<integer>';
+```
+
+我们不能直接 COPY 导入 Redshift 目标表，这是 Append 写入，无法删改，那么可以先 COPY 写入到一张临时表，现在问题就变成了如何对比两张 Redshift 表做更新，这是一个 Redshift ETL  处理的场景。
+
+Redshift 支持 MERGE 语法，能够实现比对源表对目标表做新增、修改或者删除操作，参考下面语法：
+
+
+```sql
+MERGE INTO target_table 
+USING source_table [ [ AS ] alias ] 
+ON match_condition 
+[ WHEN MATCHED THEN { UPDATE SET col_name = { expr } [,...] | DELETE }
+WHEN NOT MATCHED THEN INSERT [ ( col_name [,...] ) ] VALUES ( { expr } [, ...] ) |
+REMOVE DUPLICATES ]
+```
+
+Redshift 支持与另一张表匹配数据来对目标表进行批量删除操作，语法参考：
+
+
+```sql
+[ WITH [RECURSIVE] common_table_expression [, common_table_expression , ...] ]
+DELETE [ FROM ] { table_name | materialized_view_name }
+    [ { USING } table_name, ... ]
+    [ WHERE condition ]`
+```
+
+<br/>
+
+有了以上这些支持，那么可以完全使用 Redshift SQL 来实现数据同步需求，步骤如下：
+
+1. COPY 命令从 DynamoDB 全量复制数据写入 Redshift <u>更新临时表</u>；
+
+1. 用 EXCEPT 找出目标表中需要删除的数据写入到<u>删除临时表</u>；
+
+1. 用 MERGE 语句从<u>更新临时表获取</u>数据对目标表做批量新增和修改；
+
+1. 用 DELETE USING 语句从<u>删除临时表</u>匹配数据对目标表做批量删除删除；
+
+1. 将这些  SQL 封装进 Lambda 调用，设置 CloudWatch Event Rules 定时触发执行。
+
+步骤 1、2 只对临时表数据写入，不影响目标表，步骤 3、4 为一个事务，因为事务的隔离性并不会在事务处理阶段影响其他用户对目标表的读取，如果更新或者删除操作任一失败会自动回滚，这样能够保证目标表不会在数据同步期间不可用。
+
+<br/>
+
+完整实现 SQL 代码示例：
+
+
+```sql
+-- Transtraction 1
+truncate table t_order_upsert_staging;
+copy t_order_upsert_staging 
+from 'dynamodb://t_order' 
+iam_role 'xxxxxxx' 
+readratio 100;
+
+truncate table t_order_delete_staging;
+insert into t_order_delete_staging
+with t_deletes as (
+    select * from t_order
+    except 
+    select * from t_order_upsert_staging
+)
+select * from t_deletes;
+
+-- Transtraction 2
+MERGE INTO t_order 
+USING t_order_upsert_staging AS t
+ON t_order.pk=t.pk 
+REMOVE DUPLICATES;
+
+DELETE FROM t_order 
+USING t_order_delete_staging t 
+WHERE t_order.pk=t.pk;
+```
+
+<br/>
+
+以上方案充分利用了 Redshift 的 ETL 能力，不会引入其他 AWS 组件产生额外费用，实现简单高效，很好地满足了需求。
+
+### 引用：
+
+- [Loading data from an Amazon DynamoDB table - Amazon Redshift](https://docs.aws.amazon.com/redshift/latest/dg/t_Loading-data-from-dynamodb.html)
+
+- [Integrating with Amazon Redshift - Amazon DynamoDB](https://docs.aws.amazon.com/amazondynamodb/latest/developerguide/RedshiftforDynamoDB.html)
+
+- [MERGE - Amazon Redshift](https://docs.aws.amazon.com/redshift/latest/dg/r_MERGE.html)
+
+- [DELETE - Amazon Redshift](https://docs.aws.amazon.com/redshift/latest/dg/r_DELETE.html)
+
+- [BatchExecuteStatement - Amazon Redshift Data API](https://docs.aws.amazon.com/redshift-data/latest/APIReference/API_BatchExecuteStatement.html#API_BatchExecuteStatement_RequestSyntax)
+
+<br/>
+

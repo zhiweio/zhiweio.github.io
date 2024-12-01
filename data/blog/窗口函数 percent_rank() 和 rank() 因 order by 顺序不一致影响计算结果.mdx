@@ -1,0 +1,161 @@
+---
+title: '窗口函数 percent_rank() 和 rank() 因 order by 顺序不一致影响计算结果'
+date: '2022-02-18'
+lastmod: '2024-12-01'
+tags: ['SQL']
+summary: '在计算 SQL 的  percent_rank()  和  rank()  函数时，若  order by  顺序不一致，会导致结果不匹配。通过两个案例分析，发现当按升序和降序计算时， percent_rank  的结果会出现差异，正确的做法是保持两个函数按相同顺序计算。 rank  函数在存在并列名次时会产生排名间隙，这也是导致结果不一致的原因。'
+---
+
+查阅文档可知
+
+
+```sql
+percent_rank = (r-1)/(n-1)
+r = rank
+n = partition_count
+```
+
+<br/>
+
+在计算过程中发现 `precent_rank` 和 `rank` 函数的结果不匹配，如以下 case 1 中所述：
+
+ | rank | 19800 | 
+ | ---- | ---- | 
+ | partition_count | 26774 | 
+ | (r-1)/(n-1) | 0.7395 | 
+ | 1-(r-1)/(n-1) | 0.2604 | 
+ | percent_rank | 0.1235 | 
+
+直觉上 `percent_rank` 结果应该等于 `1-(r-1)/(n-1)` ，但是计算结果并不相等
+
+又进行 case 2 尝试，得到计算结果：
+
+ | rank | 19800 | 
+ | ---- | ---- | 
+ | partition_count | 26774 | 
+ | (r-1)/(n-1) | 0.7395 | 
+ | 1-(r-1)/(n-1) | 0.2604 | 
+ | percent_rank | 0.7395 | 
+
+从而推断出，因为计算 `rank` 和 `percent_rank` 时 `order by` 顺序不一致会导致结果出现差异，正确的是应该保持两个函数按相同的顺序计算。
+
+
+查阅 `rank` 函数的定义，发现使用 `rank` 计算如果存在并列名次会进行跳跃排名，产生间隙，可以肯定是因为这个排名间隙导致升序和降序排名时 `percent_rank` 结果会不一致。
+
+> `rank`() → bigint**
+**Returns the rank of a value in a group of values. The rank is one plus the number of rows preceding the row that are not peer with the row. Thus, tie values in the ordering will produce gaps in the sequence. The ranking is performed for each window partition.
+
+<br/>
+
+**case 1:**
+
+ | rank | percent_rank | 计算结果 | 
+ | ---- | ---- | ---- | 
+ | desc | asc | 不一致 | 
+
+
+```sql
+WITH company AS (
+  SELECT
+    company_id,
+    element_at(seic, 1).seic_lv2_code AS seic_lv2_code,
+    score_dimension.tech_layout AS tech_layout
+  FROM
+    npd_dw.innovation_company
+  WHERE
+    status = 'ACTIVE'
+),
+scores_ranking AS (
+  SELECT
+    company_id,
+    seic_lv2_code,
+    -- 技术布局评分
+    tech_layout,
+    RANK() OVER (
+      PARTITION BY seic_lv2_code
+      ORDER BY
+        tech_layout DESC
+    ) AS tech_layout_rank,
+    PERCENT_RANK() OVER (
+      PARTITION BY seic_lv2_code
+      ORDER BY
+        tech_layout
+    ) AS tech_layout_percent_rank,
+    COUNT(company_id) OVER (PARTITION BY seic_lv2_code) AS seic_company_cnt
+  FROM
+    company
+)
+SELECT
+  company_id,
+  seic_lv2_code,
+  tech_layout,
+  tech_layout_rank,
+  tech_layout_percent_rank,
+  seic_company_cnt,
+  (CAST(tech_layout_rank AS DOUBLE) -1) /(seic_company_cnt -1) AS tech_layout_percent_rank_desc
+FROM
+  scores_ranking
+WHERE
+  company_id = '81F08062408E4DB9D16D71B0094F74D7'
+```
+
+![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/b3a2a2b6-51d5-4c47-9d21-0275a1a3bae4/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133744Z&X-Amz-Expires=3600&X-Amz-Signature=203296092eaaf6628204241a6154e5e5b4af95ddaa907467ee6e1158ac800b17&X-Amz-SignedHeaders=host&x-id=GetObject)
+
+<br/>
+
+**case 2:**
+
+ | rank | percent_rank | 计算结果 | 
+ | ---- | ---- | ---- | 
+ | desc | desc | 一致 | 
+
+
+```sql
+WITH company AS (
+  SELECT
+    company_id,
+    element_at(seic, 1).seic_lv2_code AS seic_lv2_code,
+    score_dimension.tech_layout AS tech_layout
+  FROM
+    npd_dw.innovation_company
+  WHERE
+    status = 'ACTIVE'
+),
+scores_ranking AS (
+  SELECT
+    company_id,
+    seic_lv2_code,
+    -- 技术布局评分
+    tech_layout,
+    RANK() OVER (
+      PARTITION BY seic_lv2_code
+      ORDER BY
+        tech_layout DESC
+    ) AS tech_layout_rank,
+    PERCENT_RANK() OVER (
+      PARTITION BY seic_lv2_code
+      ORDER BY
+        tech_layout DESC
+    ) AS tech_layout_percent_rank,
+    COUNT(company_id) OVER (PARTITION BY seic_lv2_code) AS seic_company_cnt
+  FROM
+    company
+)
+SELECT
+  company_id,
+  seic_lv2_code,
+  tech_layout,
+  tech_layout_rank,
+  tech_layout_percent_rank,
+  seic_company_cnt,
+  (CAST(tech_layout_rank AS DOUBLE) -1) /(seic_company_cnt -1) AS tech_layout_percent_rank_desc
+FROM
+  scores_ranking
+WHERE
+  company_id = '81F08062408E4DB9D16D71B0094F74D7'
+```
+
+![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/89ce18ac-204f-46da-853b-17de4d2c5e76/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133744Z&X-Amz-Expires=3600&X-Amz-Signature=d1fb8f247f50f0a310e74adce114d5be679af5d8f8226433ace88d5c3542a702&X-Amz-SignedHeaders=host&x-id=GetObject)
+
+<br/>
+

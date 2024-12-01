@@ -1,0 +1,280 @@
+---
+title: 'MySQL 左外连接查询优化记录'
+date: '2022-03-02'
+lastmod: '2024-12-01'
+tags: ['MySQL', 'SQL']
+summary: '本文记录了MySQL左外连接查询的优化过程，分析了企业信息表和风险预警信息表的结构及数据量，展示了初始查询的SQL语句及其耗时，并指出了查询逻辑的错误。通过调整查询方式和添加索引，优化后的查询耗时显著降低。最终，探讨了不同连接方式对查询性能的影响，并提供了相关的MySQL文档链接作为参考。'
+---
+
+<br/>
+
+表结构（隐去了一些无关字段）
+
+
+```sql
+-- 企业信息表
+CREATE TABLE `t_company_summary` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '自增主键',
+  `company_id` char(32) NOT NULL DEFAULT '' COMMENT '企业id',
+  `company_name` varchar(512) DEFAULT '' COMMENT '公司名',
+  `reg_status` varchar(100) DEFAULT '' COMMENT '经营状态',
+  `org_number` varchar(50) DEFAULT '' COMMENT '组织机构代码',
+  `industry_category` varchar(200) DEFAULT '' COMMENT '国民经济行业分类门类',
+  `industry_category_middle` varchar(200) DEFAULT '' COMMENT '国民经济行业分类中类',
+  `industry_category_big` varchar(200) DEFAULT '' COMMENT '国民经济行业分类大类',
+  `province` varchar(100) DEFAULT '' COMMENT '省',
+  `city` varchar(100) DEFAULT '' COMMENT '市',
+  `district` varchar(100) DEFAULT '' COMMENT '区',
+  `longitude` double DEFAULT NULL COMMENT '经度',
+  `latitude` double DEFAULT NULL COMMENT '纬度',
+  `staff_num_range` varchar(100) DEFAULT '' COMMENT '人员规模',
+  `industry` varchar(1024) DEFAULT '' COMMENT '行业',
+  `legal_person_name` varchar(100) DEFAULT '' COMMENT '法人',
+  `reg_number` varchar(50) DEFAULT '' COMMENT '注册号',
+  `credit_code` varchar(50) DEFAULT '' COMMENT '统一社会信用代码',
+  `apno_cnt` int(11) DEFAULT NULL COMMENT '专利数量',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
+  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_company_id` (`company_id`),
+  KEY `uk_province` (`province`) USING BTREE,
+  KEY `uk_city` (`city`) USING BTREE,
+) ENGINE=InnoDB AUTO_INCREMENT=1383964 DEFAULT CHARSET=utf8mb4 ROW_FORMAT=DYNAMIC COMMENT='企业宽表'
+;
+
+
+-- 风险预警信息表
+CREATE TABLE `t_innovation_risk_warning` (
+  `id` bigint(20) NOT NULL AUTO_INCREMENT COMMENT '自增主键',
+  `company_id` char(32) NOT NULL DEFAULT '' COMMENT '企业id',
+  `version` varchar(20) NOT NULL DEFAULT '' COMMENT '数据版本',
+  `v_date` date NOT NULL COMMENT '版本更新日期',
+  `apno_cnt` int(11) DEFAULT '0' COMMENT '专利申请数量',
+  `apno_cnt_tendency` tinyint(4) NOT NULL DEFAULT '0' COMMENT '专利申请数量走势',
+  `create_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP COMMENT '记录创建时间',
+  `update_time` timestamp NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP COMMENT '记录更新时间',
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_company_id_version` (`company_id`,`version`),
+) ENGINE=InnoDB AUTO_INCREMENT=1513397 DEFAULT CHARSET=utf8mb4 ROW_FORMAT=DYNAMIC COMMENT='创新风险'
+```
+
+<br/>
+
+ | 表 | 数据量 | 增长速度 | 
+ | ---- | ---- | ---- | 
+ | t_company_summary | 4万左右 | 基本不变 | 
+ | t_innovation_risk_warning | 80万左右 | 月增长 8 万
+年增长 100 万
+预期五年总计 500 万 | 
+
+查询 SQL
+
+
+```sql
+SELECT w3.*,
+       s.company_name,
+       s.credit_code,
+       s.org_number
+FROM (
+         SELECT w2.*
+         FROM (SELECT max(v_date) v_date, company_id FROM t_innovation_risk_warning GROUP BY company_id) w
+                  INNER JOIN t_innovation_risk_warning w2 ON (w.company_id = w2.company_id AND w.v_date = w2.v_date)
+     ) w3
+         RIGHT JOIN t_company_summary s ON (w3.company_id = s.company_id)
+WHERE s.province = '江苏省'
+  and s.city = '苏州市'
+order by w3.apno_cnt desc;
+```
+
+耗时 5s 428s
+
+<br/>
+
+初步分析，下面子查询想从风险预警表中筛选出最新日期的全部数据，这里业务逻辑写错了，可以直接用 `where` 条件过滤取最新日期（`MAX(v_date)`）即可，不需要增加一次 `JOIN` ，属于数据理解有误
+
+
+```sql
+SELECT w2.*
+FROM (SELECT max(v_date) v_date, company_id FROM t_innovation_risk_warning GROUP BY company_id) w
+      INNER JOIN t_innovation_risk_warning w2 ON (w.company_id = w2.company_id AND w.v_date = w2.v_date
+)
+```
+
+修改后：
+
+
+```sql
+SELECT t1.*
+FROM t_innovation_risk_warning t1,
+     (SELECT MAX(v_date) AS latest_date FROM t_innovation_risk_warning LIMIT 1) t2
+WHERE t1.v_date = t2.latest_date
+```
+
+用了 `v_date` 作为查询条件后，给它加上索引
+
+
+```sql
+create index idx_v_date on t_innovation_risk_warning (v_date desc);
+```
+
+初步重写后的完整查询语句为：
+
+
+```sql
+SELECT a1.company_name,
+       a1.credit_code,
+       a1.org_number,
+       a2.*
+FROM t_company_summary a1
+         LEFT JOIN
+     (
+         SELECT t1.*
+         FROM t_innovation_risk_warning t1,
+              (SELECT MAX(v_date) AS latest_date FROM t_innovation_risk_warning LIMIT 1) t2
+         WHERE t1.v_date = t2.latest_date
+     ) a2 ON a1.company_id = a2.company_id
+WHERE a1.province = '江苏省'
+  AND a1.city = '苏州市'
+ORDER BY a2.apno_cnt DESC
+```
+
+耗时 2s 931ms
+
+优化不明显，索引效果不大
+
+<br/>
+
+EXPLAIN 看一下
+
+
+```plain text
++--+-----------+----------+----------+----+--------------------------------+---------------------+-------+-----------------------+-----+--------+--------------------------------------------+
+|id|select_type|table     |partitions|type|possible_keys                   |key                  |key_len|ref                    |rows |filtered|Extra                                       |
++--+-----------+----------+----------+----+--------------------------------+---------------------+-------+-----------------------+-----+--------+--------------------------------------------+
+|1 |PRIMARY    |a1        |NULL      |ref |uk_province,uk_city             |uk_province          |403    |const                  |18054|50      |Using where; Using temporary; Using filesort|
+|1 |PRIMARY    |<derived3>|NULL      |ALL |NULL                            |NULL                 |NULL   |NULL                   |1    |100     |NULL                                        |
+|1 |PRIMARY    |t1        |NULL      |ref |uk_company_id_version,idx_v_date|uk_company_id_version|128    |db_bi_abc.a1.company_id|20   |100     |Using where                                 |
+|3 |DERIVED    |NULL      |NULL      |NULL|NULL                            |NULL                 |NULL   |NULL                   |NULL |NULL    |Select tables optimized away                |
++--+-----------+----------+----------+----+--------------------------------+---------------------+-------+-----------------------+-----+--------+--------------------------------------------+
+```
+
+`t_innovation_risk_warning` 表内层子查询没走 `v_date` 索引
+
+<br/>
+
+再看一下查询语句，使用了 `LEFT JOIN ` ，完整的描述是自然左外连接，这是`外连接`，所以放在左边的 `t_company_summary` 表结果集会全部保留，一一匹配右边的结果集，即从 `t_innovation_risk_warning` 内层子查询筛选出的数据
+
+<br/>
+
+翻阅 MySQL 官方文档 “Outer Join Simplification”** 部分**
+
+> When the optimizer evaluates plans for outer join operations, it takes into consideration only plans where, for each such operation, the outer tables are accessed before the inner tables. The optimizer choices are limited because only such plans enable outer joins to be executed using the nested-loop algorithm.
+
+Consider a query of this form, where `R(T2)` greatly narrows the number of matching rows from table `T2`
+         `SELECT * T1 FROM T1 LEFT JOIN T2 ON P1(T1,T2) WHERE P(T1,T2) AND R(T2)`
+If the query is executed as written, the optimizer has no choice but to access the less-restricted table `T1 `before the more-restricted table `T2`, which may produce a very <u>inefficient execution plan</u>.
+
+可以猜测，MySQL 优化后的执行计划并未对左外连接的内层表采用更严格的访问方式，虽然因为 `ON` 上的条件走了 `ref` 访问，但是并没有决策出可以使用 `v_date` 字段上的二级索引
+
+<br/>
+
+那改变一下连接方式，把 `t_innovation_risk_warning` 作为外层表，使用右外连接
+
+
+```sql
+SELECT a1.company_name,
+       a1.credit_code,
+       a1.org_number,
+       a2.*
+FROM t_company_summary a1
+         RIGHT JOIN
+     (
+         SELECT t1.*
+         FROM t_innovation_risk_warning t1,
+              (SELECT MAX(v_date) AS latest_date FROM t_innovation_risk_warning LIMIT 1) t2
+         WHERE t1.v_date = t2.latest_date
+     ) a2 ON a1.company_id = a2.company_id
+WHERE a1.province = '江苏省'
+  AND a1.city = '苏州市'
+ORDER BY a2.apno_cnt DESC
+```
+
+EXPLAIN
+
+
+```plain text
++--+-----------+----------+----------+------+---------------------------------+-------------+-------+-----------------------+-----+--------+----------------------------+
+|id|select_type|table     |partitions|type  |possible_keys                    |key          |key_len|ref                    |rows |filtered|Extra                       |
++--+-----------+----------+----------+------+---------------------------------+-------------+-------+-----------------------+-----+--------+----------------------------+
+|1 |PRIMARY    |<derived3>|NULL      |system|NULL                             |NULL         |NULL   |NULL                   |1    |100     |Using filesort              |
+|1 |PRIMARY    |t1        |NULL      |ref   |uk_company_id_version,idx_v_date |idx_v_date   |3      |const                  |85058|100     |Using index condition       |
+|1 |PRIMARY    |a1        |NULL      |eq_ref|uk_company_id,uk_province,uk_city|uk_company_id|128    |db_bi_abc.t1.company_id|1    |25      |Using where                 |
+|3 |DERIVED    |NULL      |NULL      |NULL  |NULL                             |NULL         |NULL   |NULL                   |NULL |NULL    |Select tables optimized away|
++--+-----------+----------+----------+------+---------------------------------+-------------+-------+-----------------------+-----+--------+----------------------------+
+```
+
+对于 `t_innovation_risk_warning` 表的查询已经使用了索引条件，可以推断，MySQL 优化器识别出并对外层表采用了最严格的访问方式
+
+耗时 468ms
+
+<br/>
+
+当然，左连接、右连接输出的结果集取决于外层表，会有不同，但在这里的业务不会有影响
+
+<br/>
+
+再看下内连接的执行计划
+
+
+```plain text
++--+-----------+----------+----------+------+---------------------------------+-------------+-------+-----------------------+-----+--------+----------------------------+
+|id|select_type|table     |partitions|type  |possible_keys                    |key          |key_len|ref                    |rows |filtered|Extra                       |
++--+-----------+----------+----------+------+---------------------------------+-------------+-------+-----------------------+-----+--------+----------------------------+
+|1 |PRIMARY    |<derived3>|NULL      |system|NULL                             |NULL         |NULL   |NULL                   |1    |100     |Using filesort              |
+|1 |PRIMARY    |t1        |NULL      |ref   |uk_company_id_version,idx_v_date |idx_v_date   |3      |const                  |85058|100     |Using index condition       |
+|1 |PRIMARY    |a1        |NULL      |eq_ref|uk_company_id,uk_province,uk_city|uk_company_id|128    |db_bi_abc.t1.company_id|1    |25      |Using where                 |
+|3 |DERIVED    |NULL      |NULL      |NULL  |NULL                             |NULL         |NULL   |NULL                   |NULL |NULL    |Select tables optimized away|
++--+-----------+----------+----------+------+---------------------------------+-------------+-------+-----------------------+-----+--------+----------------------------+
+```
+
+同样选择了最优的计划，用了索引条件
+
+因为内连接没有左外连接的限制，并且 MySQL 会自行选择最优的连接顺序
+
+<br/>
+
+将`t_innovation_risk_warning` 表数据提升到 500 万级别，测试发现执行耗时几乎不变，因为这里的查询瓶颈在于对 `JOIN` 后的结果集进行排序，结果集的数量差不多等于`t_company_summary` 表中企业数量，基本维持在 4 万家左右
+
+<br/>
+
+### 补充
+
+也可以参考表的统计信息
+
+
+```sql
+show index from t_innovation_risk_warning;
+
++-------------------------+----------+---------------------+------------+-----------+---------+-----------+--------+------+----+----------+-------+-------------+-------+
+|Table                    |Non_unique|Key_name             |Seq_in_index|Column_name|Collation|Cardinality|Sub_part|Packed|Null|Index_type|Comment|Index_comment|Visible|
++-------------------------+----------+---------------------+------------+-----------+---------+-----------+--------+------+----+----------+-------+-------------+-------+
+|t_innovation_risk_warning|0         |PRIMARY              |1           |id         |A        |851775     |NULL    |NULL  |    |BTREE     |       |             |YES    |
+|t_innovation_risk_warning|0         |uk_company_id_version|1           |company_id |A        |30396      |NULL    |NULL  |    |BTREE     |       |             |YES    |
+|t_innovation_risk_warning|0         |uk_company_id_version|2           |version    |A        |604273     |NULL    |NULL  |    |BTREE     |       |             |YES    |
+|t_innovation_risk_warning|1         |idx_v_date           |1           |v_date     |A        |24         |NULL    |NULL  |    |BTREE     |       |             |YES    |
+|t_innovation_risk_warning|1         |idx_apno_cnt         |1           |apno_cnt   |A        |3901       |NULL    |NULL  |YES |BTREE     |       |             |YES    |
++-------------------------+----------+---------------------+------------+-----------+---------+-----------+--------+------+----+----------+-------+-------------+-------+
+```
+
+### Ref:
+
+[https://dev.mysql.com/doc/refman/5.7/en/outer-join-optimization.html](https://dev.mysql.com/doc/refman/5.7/en/outer-join-optimization.html)
+
+[https://dev.mysql.com/doc/refman/5.7/en/outer-join-simplification.html](https://dev.mysql.com/doc/refman/5.7/en/outer-join-simplification.html)
+
+[https://dev.mysql.com/doc/refman/5.7/en/nested-join-optimization.html](https://dev.mysql.com/doc/refman/5.7/en/nested-join-optimization.html)
+
+[https://dev.mysql.com/doc/refman/5.7/en/nested-loop-joins.html](https://dev.mysql.com/doc/refman/5.7/en/nested-loop-joins.html)
+
+<br/>
+
