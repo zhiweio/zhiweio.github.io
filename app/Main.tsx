@@ -21,17 +21,15 @@ export default function Home({ posts }) {
           <div className="dark:text-grey text-gray mb-8  mt-4 text-base">
             <p>Data Engineer, CLI User.</p>
             <p>
-              我是一名数据研发工程师，命令行爱好者，开源贡献者。我主要写 Python 和 SQL，也写过一点
-              Scala、Java，正在学习使用前端。
+              我是一名数据研发工程师，热爱命令行与开源，主要使用 Python 和 SQL，也写 Shell、Java/Scala，正在通过 Vide coding 实践全栈开发，探索 AI Agent 的可能性。
             </p>
             <p className="dark:text-grey text-gray mb-8   mt-4 text-sm">
               <span className="mr-3 inline-block whitespace-nowrap pt-3">#Data Engineering</span>
               <span className="mr-3 inline-block whitespace-nowrap pt-3">#Data Architect</span>
               <span className="mr-3 inline-block whitespace-nowrap pt-3">#AWS</span>
-              <span className="mr-3 inline-block whitespace-nowrap pt-3">#Databricks</span>
               <span className="mr-3 inline-block whitespace-nowrap pt-3">#Azure</span>
-              <span className="mr-3 inline-block whitespace-nowrap pt-3">#Snowflake</span>
-              <span className="mr-3 inline-block whitespace-nowrap pt-3">#DevOps</span>
+              <span className="mr-3 inline-block whitespace-nowrap pt-3">#Full Stack</span>
+              <span className="mr-3 inline-block whitespace-nowrap pt-3">#DataOps</span>
             </p>
           </div>
 
