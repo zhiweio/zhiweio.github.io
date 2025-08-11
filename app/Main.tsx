@@ -37,7 +37,7 @@ export default function Home({ posts }) {
 
               <p className="text-base leading-relaxed text-gray-600 dark:text-gray-400 sm:text-lg">
                 我是一名数据研发工程师，热爱命令行与开源，主要使用 Python 和 SQL，也写
-                Shell、Java/Scala，正在通过 Vide coding 实践全栈开发，探索 AI Agent 的可能性。
+                Shell、Java/Scala，正在通过 Vibe coding 实践全栈开发，探索 AI Agent 的可能性。
               </p>
             </div>
           </div>
