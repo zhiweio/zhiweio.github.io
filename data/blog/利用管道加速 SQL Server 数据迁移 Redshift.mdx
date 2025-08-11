@@ -182,7 +182,7 @@ COPY schema.table FROM 's3://bucket-name/path/' CREDENTIALS 'aws_access_key_id=X
 
 在 Linux 系统中，很多命令都是支持管道的，我们可以将前一个命令的输出作为后一个命令的输入，将多个命令拼成一个管道流作业，这就变成了并行作业。理想的迁移流程是一个流处理：一边导出数据、一边切块压缩、一边上传，不用等待前一步完整结束，前面的任务处理了多少数据，立即输出给到后面的任务去处理，没有阻塞。按照这样的思路，可以画出下面的任务时间图：
 
-![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/037b786d-f2e1-4bde-ba92-f30209dd7ae0/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133721Z&X-Amz-Expires=3600&X-Amz-Signature=aecfcd9676e4006eec44d76be0bacee6f465fd1849b26e64154cc8e6bb08e5d9&X-Amz-SignedHeaders=host&x-id=GetObject)
+![Untitled.png](/static/images/利用管道加速-SQL-Server-数据迁移-Redshift/Untitled.png)
 
 ## 利用管道实现并行处理
 
@@ -305,7 +305,7 @@ cat /path/to/named_pipe | lzop | aws s3 cp --recursive /path/to/split_file_part_
 
  是一个利用 Linux 命名管道来加速 SQL Server 数据导出到 Amazon S3 的工具。它通过 UNIX 管道无缝地传输数据，支持多种通用数据格式，如 CSV、TSV 和 JSON。
 
-![563200.gif](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/8155a566-2d0c-4ec4-86e6-4e496e95687e/563200.gif?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133722Z&X-Amz-Expires=3600&X-Amz-Signature=c5d65f4132f4a47d54d2cc1f4a32ff889dcc6de132cd25903b09efb7c569b858&X-Amz-SignedHeaders=host&x-id=GetObject)
+![563200.gif](/static/images/利用管道加速-SQL-Server-数据迁移-Redshift/563200.gif)
 
 ### 工作原理
 

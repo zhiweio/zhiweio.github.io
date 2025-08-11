@@ -6,7 +6,7 @@ tags: ['Redshift', 'DynamoDB']
 summary: '本文介绍了如何简单高效地将DynamoDB的数据同步到Redshift。通过全量扫描DynamoDB并使用COPY命令导入数据到临时表，随后利用MERGE和DELETE语句实现目标表的批量更新和删除，确保数据一致性。方案设计充分利用了Redshift的ETL能力，避免了引入其他AWS组件的额外费用，满足了低频率更新和小数据量的需求。'
 ---
 
-![PixPin_2024-12-01_21-33-02-tuya.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/b2332c73-3905-4929-a61e-487aeb094203/PixPin_2024-12-01_21-33-02-tuya.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133727Z&X-Amz-Expires=3600&X-Amz-Signature=136b3b56b992dccc60deb7ae2b6e79da0ae1244e6968a65ed25c4bec6754ac99&X-Amz-SignedHeaders=host&x-id=GetObject)
+![PixPin_2024-12-01_21-33-02-tuya.png](/static/images/简单高效地从-DynamoDB-同步数据到-Redshift/PixPin_2024-12-01_21-33-02-tuya.png)
 
 需求很简单，将一张 DynamoDB 的表数据同步到 Redshift 表，需要两张表数据保持一致，数据量不大，最多 10 万级别，Dynamo 表的更新为不定时地人工发布，频率更新不高，这种场景下如何设计简单易实现的方案？
 

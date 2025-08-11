@@ -189,21 +189,21 @@ Usually you’ll see this error when a task is in progress on a mirrored instanc
 
 首先注意到 RDS 实例开启了自动备份的功能。
 
-![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/5b335362-358c-4aad-bbb3-bd6af2cba6a3/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133732Z&X-Amz-Expires=3600&X-Amz-Signature=3c3f68fa8637ee49b45d9cc80f1d9421e6d4b305e17ee637e6387585edf8df63&X-Amz-SignedHeaders=host&x-id=GetObject)
+![Untitled.png](/static/images/AWS-RDS-SQLServer-还原故障-Troubleshooting/Untitled.png)
 
-![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/c714cb60-b636-4b3e-8b62-095afb82fd46/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133732Z&X-Amz-Expires=3600&X-Amz-Signature=cdd2bdf26bbfbee6d5fd634c5bf949ba3a96f16cd50152165627942cba0edb6b&X-Amz-SignedHeaders=host&x-id=GetObject)
+![Untitled.png](/static/images/AWS-RDS-SQLServer-还原故障-Troubleshooting/Untitled.png)
 
 <br/>
 
 可以从 events 中看到最近备份的记录。
 
-![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/8a267222-cf35-4abd-8e61-ec165c941173/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133732Z&X-Amz-Expires=3600&X-Amz-Signature=af82cd3ad03f480c37e15b4686ed6bbdbfb7c69144027e78301c9f2d4b1b16e6&X-Amz-SignedHeaders=host&x-id=GetObject)
+![Untitled.png](/static/images/AWS-RDS-SQLServer-还原故障-Troubleshooting/Untitled.png)
 
 <br/>
 
 我翻到 RDS 服务日志，看看发生了什么，有没有异常记录。
 
-![Untitled.png](https://prod-files-secure.s3.us-west-2.amazonaws.com/70e56769-b60c-45e0-88e7-2408e4d80811/de27652b-5ef1-4795-b438-9aef3f48de7a/Untitled.png?X-Amz-Algorithm=AWS4-HMAC-SHA256&X-Amz-Content-Sha256=UNSIGNED-PAYLOAD&X-Amz-Credential=AKIAT73L2G45FSPPWI6X%2F20241201%2Fus-west-2%2Fs3%2Faws4_request&X-Amz-Date=20241201T133732Z&X-Amz-Expires=3600&X-Amz-Signature=d6b52c7edbfa1146a97733039bff167fb1dc24ff9ea63bcca11b60de2c0c3a5c&X-Amz-SignedHeaders=host&x-id=GetObject)
+![Untitled.png](/static/images/AWS-RDS-SQLServer-还原故障-Troubleshooting/Untitled.png)
 
 
 ```plain text
