@@ -1,1 +1,1 @@
-{"windows":1,"数字生活":1,"redshift":3,"dynamodb":1,"sftp":1,"file-sync":1,"mssql":3,"s3":1,"unix":1,"pipe":1,"python":5,"troubleshooting":2,"sqlite":2,"data-pipeline":1,"dsl":1,"pool":1,"tidb":1,"sql":3,"flink":1,"ticdc":1,"mysql":1,"bi":1,"redash":1,"data-classes":2,"elasticsearch":1}
+{"mssql":3,"troubleshooting":2,"bi":1,"redash":1,"python":5,"data-classes":2,"flink":1,"ticdc":1,"mysql":1,"sql":3,"dsl":1,"sqlite":2,"pool":1,"tidb":1,"sftp":1,"file-sync":1,"elasticsearch":1,"s3":1,"unix":1,"pipe":1,"redshift":3,"data-pipeline":1,"windows":1,"数字生活":1,"dynamodb":1}

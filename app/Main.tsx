@@ -10,30 +10,62 @@ export default function Home({ posts }) {
   return (
     <>
       <div className="divide-y divide-gray-200 dark:divide-gray-700">
-        <div className="space-y-2 pb-8 pt-6 md:space-y-5">
-          <h1 className="text-2xl font-extrabold leading-9 tracking-tight text-gray-900 dark:text-gray-100 sm:text-4xl sm:leading-10 md:text-5xl md:leading-14">
-            I'm{' '}
-            <span className="dark:from-secondary-700 dark:to-secondary-400 mt-10 bg-gradient-to-r from-primary-700 to-primary-400 bg-clip-text text-center text-4xl font-extrabold tracking-tight text-transparent sm:text-5xl lg:text-6xl">
-              wang zhiwei
-            </span>{' '}
-            👋
-          </h1>
-          <div className="dark:text-grey text-gray mb-8  mt-4 text-base">
-            <p>Data Engineer, CLI User.</p>
-            <p>
-              我是一名数据研发工程师，热爱命令行与开源，主要使用 Python 和 SQL，也写 Shell、Java/Scala，正在通过 Vide coding 实践全栈开发，探索 AI Agent 的可能性。
-            </p>
-            <p className="dark:text-grey text-gray mb-8   mt-4 text-sm">
-              <span className="mr-3 inline-block whitespace-nowrap pt-3">#Data Engineering</span>
-              <span className="mr-3 inline-block whitespace-nowrap pt-3">#Data Architect</span>
-              <span className="mr-3 inline-block whitespace-nowrap pt-3">#AWS</span>
-              <span className="mr-3 inline-block whitespace-nowrap pt-3">#Azure</span>
-              <span className="mr-3 inline-block whitespace-nowrap pt-3">#Full Stack</span>
-              <span className="mr-3 inline-block whitespace-nowrap pt-3">#DataOps</span>
-            </p>
+        <div className="relative space-y-6 pb-12 pt-8 md:space-y-8 md:pb-16 md:pt-12">
+          {/* 背景装饰 */}
+          <div className="absolute inset-0 -z-10 overflow-hidden">
+            <div className="absolute -top-40 -right-32 h-80 w-80 rounded-full bg-gradient-to-br from-primary-100 to-secondary-100 opacity-20 blur-3xl dark:from-primary-900 dark:to-secondary-900 dark:opacity-10"></div>
+            <div className="absolute -bottom-40 -left-32 h-80 w-80 rounded-full bg-gradient-to-tr from-secondary-100 to-primary-100 opacity-20 blur-3xl dark:from-secondary-900 dark:to-primary-900 dark:opacity-10"></div>
           </div>
 
-          <p className="text-gray dark:text-gray text-lg leading-7">{siteMetadata.description}</p>
+          {/* 主标题区域 */}
+          <div className="text-center">
+            <h1 className="mb-4 text-3xl font-extrabold leading-tight tracking-tight text-gray-900 dark:text-gray-100 sm:text-5xl md:text-6xl lg:text-7xl">
+              <span className="block mb-2">Hi, I'm</span>
+              <span className="relative inline-block">
+                <span className="bg-gradient-to-r from-primary-700 to-primary-400 bg-clip-text text-transparent dark:from-secondary-700 dark:to-secondary-400">
+                  Wang Zhiwei
+                </span>
+                <span className="ml-2 text-4xl sm:text-5xl md:text-6xl">👋</span>
+              </span>
+            </h1>
+
+            {/* 副标题 */}
+            <div className="mx-auto max-w-3xl space-y-4">
+              <p className="text-xl font-medium text-gray-700 dark:text-gray-300 sm:text-2xl">
+                Data Engineer & CLI Enthusiast
+              </p>
+
+              <p className="text-base leading-relaxed text-gray-600 dark:text-gray-400 sm:text-lg">
+                我是一名数据研发工程师，热爱命令行与开源，主要使用 Python 和 SQL，也写 Shell、Java/Scala，正在通过 Vide coding 实践全栈开发，探索 AI Agent 的可能性。
+              </p>
+            </div>
+          </div>
+
+          {/* 技能标签 */}
+          <div className="flex flex-wrap justify-center gap-3 pt-4">
+            {[
+              'Data Engineering',
+              'Data Architect',
+              'AWS',
+              'Azure',
+              'Full Stack',
+              'DataOps'
+            ].map((skill) => (
+              <span
+                key={skill}
+                className="inline-flex items-center rounded-full bg-gradient-to-r from-primary-50 to-secondary-50 px-4 py-2 text-sm font-medium text-primary-700 ring-1 ring-primary-200 transition-all duration-200 hover:scale-105 hover:shadow-md dark:from-primary-900/20 dark:to-secondary-900/20 dark:text-primary-300 dark:ring-primary-800"
+              >
+                #{skill}
+              </span>
+            ))}
+          </div>
+
+          {/* 描述文字 */}
+          <div className="text-center pt-6">
+            <p className="mx-auto max-w-2xl text-lg leading-relaxed text-gray-600 dark:text-gray-400">
+              {siteMetadata.description}
+            </p>
+          </div>
         </div>
         <ul className="divide-y divide-gray-200 dark:divide-gray-700">
           {!posts.length && 'No posts found.'}
